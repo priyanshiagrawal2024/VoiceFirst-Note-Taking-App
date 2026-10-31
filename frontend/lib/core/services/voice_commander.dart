@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'tts_service.dart';
 import 'stt_service.dart';
 import 'dialogue_manager.dart';
+import 'earcon_service.dart';
 import '../network/api_client.dart';
 
 enum VoiceState { idle, listening, processing, speaking }
@@ -96,6 +97,7 @@ class VoiceCommander extends ChangeNotifier {
     if (_state == VoiceState.speaking) return;
     _state = VoiceState.listening;
     notifyListeners();
+    EarconService.play('listen_start');
     await sttService.startListening();
   }
 
@@ -122,6 +124,9 @@ class VoiceCommander extends ChangeNotifier {
 
   Future<void> processUtterance(String text, {double confidence = 1.0}) async {
     _lastRecognizedText = text;
+    _state = VoiceState.processing;
+    notifyListeners();
+    EarconService.play('processing');
 
     final contextMap = dialogueManager.toContextMap();
     final result = await apiClient.processVoice(

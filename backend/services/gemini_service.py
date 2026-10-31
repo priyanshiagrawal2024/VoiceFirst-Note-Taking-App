@@ -4,9 +4,45 @@ from typing import Dict, Any, List, Optional
 
 class GeminiService:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        self.api_key = api_key or self._discover_api_key()
         self.client = None
         self._init_client()
+
+    def _discover_api_key(self) -> str:
+        # Check environment variables
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+        if key:
+            return key.strip()
+
+        # Check local gemini_key.txt
+        local_key_file = os.path.join(os.path.dirname(__file__), "..", "gemini_key.txt")
+        if os.path.exists(local_key_file):
+            try:
+                with open(local_key_file, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        return content
+            except Exception:
+                pass
+
+        return ""
+
+    def set_api_key(self, api_key: str) -> bool:
+        """
+        Dynamically sets or updates the Gemini API key at runtime.
+        """
+        self.api_key = api_key.strip()
+        self._init_client()
+        if self.is_available():
+            # Save to local file for persistence
+            try:
+                local_key_file = os.path.join(os.path.dirname(__file__), "..", "gemini_key.txt")
+                with open(local_key_file, "w", encoding="utf-8") as f:
+                    f.write(self.api_key)
+            except Exception:
+                pass
+            return True
+        return False
 
     def _init_client(self):
         if self.api_key:
@@ -16,9 +52,93 @@ class GeminiService:
             except Exception as e:
                 print(f"[GeminiService] Warning: Could not initialize Google GenAI client: {e}")
                 self.client = None
+        else:
+            self.client = None
 
     def is_available(self) -> bool:
         return self.client is not None
+
+    def _generate_content_with_fallback(self, prompt: str) -> Optional[str]:
+        """
+        Calls Gemini models with fallback between 2.5-flash and 1.5-flash.
+        """
+        if not self.is_available():
+            return None
+
+        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        for model in models_to_try:
+            try:
+                response = self.client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                )
+                if response and response.text:
+                    return response.text.strip()
+            except Exception as e:
+                print(f"[GeminiService] Model {model} attempt notice: {e}")
+        return None
+
+    def auto_correct_speech(self, raw_text: str, context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Uses Gemini to clean speech-to-text acoustic mishearings and phonetic typos
+        in academic vocabulary while preserving the speaker's true intent.
+        """
+        if not self.is_available() or not raw_text.strip():
+            return None
+
+        prompt = f"""
+You are an intelligent acoustic speech post-processor for "Voice-First", an app for visually impaired college students.
+Raw speech recognition text: "{raw_text}"
+Active context: {json.dumps(context or {})}
+
+Fix speech recognition errors, misspellings, and phonetic confusions for college-level terminology across Physics, Chemistry, Biology, Computer Science, Mathematics, and History (e.g., 'my toes is' -> 'mitosis', 'sell decision' -> 'cell division', 'new ton second low' -> 'Newton's second law', 'boyle slaw' -> 'Boyle's law', 'pythun' -> 'Python', 'quize me' -> 'quiz me').
+Restore appropriate spelling, capitalization, and punctuation.
+Do NOT invent new content or change the user's intent.
+Respond ONLY with the clean, corrected text string. No quotes, no markdown, no explanation.
+"""
+        res = self._generate_content_with_fallback(prompt)
+        if res:
+            cleaned = res.strip().strip('"').strip("'")
+            return cleaned if len(cleaned) > 0 else raw_text
+        return None
+
+    def generate_notes_for_topic(self, topic: str, count: int = 5) -> Optional[List[Dict[str, str]]]:
+        """
+        Generates structured, high-yield college lecture notes for any academic topic.
+        """
+        if not self.is_available() or not topic.strip():
+            return None
+
+        prompt = f"""
+You are an academic curriculum author for college students.
+Topic: "{topic}"
+
+Generate {count} high-quality, clear, accurate college-level lecture notes on this topic.
+Include key definitions, important principles, and concrete examples.
+Respond ONLY with valid JSON in this exact structure:
+{{
+  "notes": [
+    {{
+      "text": "Detailed, complete factual note sentence.",
+      "tag": "Definition" | "Important" | "Example"
+    }}
+  ]
+}}
+"""
+        raw = self._generate_content_with_fallback(prompt)
+        if not raw:
+            return None
+
+        try:
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            data = json.loads(raw)
+            notes = data.get("notes", [])
+            if isinstance(notes, list) and len(notes) > 0:
+                return notes
+        except Exception as e:
+            print(f"[GeminiService] Error parsing generate_notes_for_topic: {e}")
+        return None
 
     def parse_intent(self, text: str, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
@@ -58,13 +178,11 @@ Classify into one of the following intents:
 Respond ONLY with valid JSON in the format:
 {{"intent": "INTENT_NAME", "entities": {{}}, "confidence": 0.95}}
 """
+        raw = self._generate_content_with_fallback(prompt)
+        if not raw:
+            return None
+
         try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            raw = response.text.strip()
-            # Clean markdown codeblocks if wrapped in ```json ... ```
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             data = json.loads(raw)
@@ -101,12 +219,11 @@ Respond ONLY with valid JSON:
   "spoken_feedback": "Short encouraging spoken feedback starting with the result"
 }}
 """
+        raw = self._generate_content_with_fallback(prompt)
+        if not raw:
+            return None
+
         try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            raw = response.text.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             return json.loads(raw)
@@ -117,7 +234,6 @@ Respond ONLY with valid JSON:
     def contextual_fuzzy_search(self, query: str, notes: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
         """
         Uses Gemini for contextual fuzzy retrieval against real user notes.
-        Strict honesty: If no note matches, returns empty list.
         """
         if not self.is_available() or not notes:
             return None
@@ -133,18 +249,15 @@ If NONE of the notes are relevant, return an empty array []. Never invent or hal
 Respond ONLY with valid JSON:
 {{"matched_ids": ["id1", "id2"]}}
 """
+        raw = self._generate_content_with_fallback(prompt)
+        if not raw:
+            return None
+
         try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            raw = response.text.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             data = json.loads(raw)
             matched_ids = data.get("matched_ids", [])
-            
-            # Map back to note dicts
             notes_by_id = {n["note_id"]: n for n in notes}
             matched_notes = [notes_by_id[nid] for nid in matched_ids if nid in notes_by_id]
             return matched_notes
@@ -154,7 +267,7 @@ Respond ONLY with valid JSON:
 
     def generate_mcq_quiz(self, topic: str, notes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
-        Generates 5 multiple-choice quiz questions based ONLY on the content of user notes.
+        Generates 5 multiple-choice quiz questions based on topic and notes.
         """
         if not self.is_available() or not notes:
             return None
@@ -162,16 +275,15 @@ Respond ONLY with valid JSON:
         prompt = f"""
 You are an accessible academic quiz generator for "Voice-First", an app for visually impaired college students.
 Topic: "{topic}"
-Notes from Student's SQLite Database:
+Notes:
 {json.dumps([{"subject": n.get("subject", "General"), "tag": n.get("tag", "General"), "text": n["text"]} for n in notes])}
 
-Generate EXACTLY 5 multiple-choice quiz questions based ONLY on the content of these notes.
+Generate EXACTLY 5 multiple-choice quiz questions based on this academic content.
 Each question must contain:
 - "question": clear question string
-- "options": an array of 4 distinct options, e.g. ["A: ...", "B: ...", "C: ...", "D: ..."] (or option texts)
+- "options": an array of 4 distinct options, e.g. ["Option A", "Option B", "Option C", "Option D"]
 - "correct_answer": the letter of the correct option ("A", "B", "C", or "D")
-
-Never hallucinate or include information outside these notes.
+- "expected_answer": concise factual explanation
 
 Respond ONLY with valid JSON in this exact structure:
 {{
@@ -181,17 +293,17 @@ Respond ONLY with valid JSON in this exact structure:
     {{
       "question": "What is ...?",
       "options": ["Option A", "Option B", "Option C", "Option D"],
-      "correct_answer": "B"
+      "correct_answer": "B",
+      "expected_answer": "Explanation of correct answer."
     }}
   ]
 }}
 """
+        raw = self._generate_content_with_fallback(prompt)
+        if not raw:
+            return None
+
         try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            raw = response.text.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             data = json.loads(raw)
@@ -199,10 +311,9 @@ Respond ONLY with valid JSON in this exact structure:
                 data["type"] = "quiz"
                 data["topic"] = topic
                 return data
-            return None
         except Exception as e:
             print(f"[GeminiService] Error during generate_mcq_quiz: {e}")
-            return None
+        return None
 
     def generate_flashcards(self, topic: str, notes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
@@ -214,15 +325,13 @@ Respond ONLY with valid JSON in this exact structure:
         prompt = f"""
 You are an accessible study flashcard generator for "Voice-First", an app for visually impaired college students.
 Topic: "{topic}"
-Notes from Student's SQLite Database:
+Notes:
 {json.dumps([{"subject": n.get("subject", "General"), "tag": n.get("tag", "General"), "text": n["text"]} for n in notes])}
 
-Generate between 8 and 10 flashcards as question/answer (front and back) pairs summarizing key concepts strictly from these notes.
+Generate between 8 and 10 flashcards as question/answer (front and back) pairs summarizing key concepts from these notes.
 Each card must contain:
 - "front": Question, key term, or prompt
-- "back": Concise, accurate explanation or definition directly from the notes
-
-Never invent facts outside these notes.
+- "back": Concise, accurate explanation or definition
 
 Respond ONLY with valid JSON in this exact structure:
 {{
@@ -236,12 +345,11 @@ Respond ONLY with valid JSON in this exact structure:
   ]
 }}
 """
+        raw = self._generate_content_with_fallback(prompt)
+        if not raw:
+            return None
+
         try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            raw = response.text.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             data = json.loads(raw)
@@ -249,7 +357,6 @@ Respond ONLY with valid JSON in this exact structure:
                 data["type"] = "flashcards"
                 data["topic"] = topic
                 return data
-            return None
         except Exception as e:
             print(f"[GeminiService] Error during generate_flashcards: {e}")
-            return None
+        return None

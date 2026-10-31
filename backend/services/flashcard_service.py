@@ -134,6 +134,11 @@ class FlashcardService:
         """
         notes = NoteService.get_notes_by_topic_or_subject(user_id, topic)
         if not notes:
+            if topic:
+                from services.academic_knowledge_service import AcademicKnowledgeService
+                gen = AcademicKnowledgeService.generate_and_store_materials(user_id, topic, gemini_service=gemini_service)
+                if gen and gen.get("flashcards"):
+                    return gen["flashcards"]
             return None
 
         clean_topic = topic.strip().title() if topic else (notes[0].get("subject", "General"))

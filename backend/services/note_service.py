@@ -1,4 +1,5 @@
 import uuid
+import re
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from database import get_db_connection
@@ -93,14 +94,40 @@ class NoteService:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # If subject/session_id not provided, check active session
+        from services.auto_correction_service import AutoSpeechCorrectionService
+        detected_subj = AutoSpeechCorrectionService.detect_subject(text, fallback_subject=None)
+
+        # If subject/session_id not provided, check active session or detect from text
         if not session_id or not subject:
             active = cls.get_active_session(user_id)
             if active:
                 session_id = session_id or active["session_id"]
                 subject = subject or active["subject"]
             else:
-                subject = subject or "General"
+                subject = subject or detected_subj or "General"
+
+        # Cross-Domain Intelligence:
+        # If the note content is clearly about a different recognized subject domain (e.g. Geography or Computer Science)
+        # while the current session/subject is different (e.g. Biology):
+        if detected_subj and subject and detected_subj.lower() != subject.lower():
+            text_lower = text.lower()
+            detected_lower = detected_subj.lower()
+            starts_with_detected = (
+                text_lower.startswith(detected_lower) or 
+                text_lower.startswith(f"in {detected_lower}") or
+                text_lower.startswith(f"for {detected_lower}") or
+                text_lower.startswith(f"about {detected_lower}")
+            )
+            current_kws = AutoSpeechCorrectionService.DOMAIN_KEYWORDS.get(subject.title(), [])
+            has_current_kws = any(kw in text_lower for kw in current_kws)
+
+            if starts_with_detected or not has_current_kws:
+                # Re-attribute note to detected subject domain
+                subject = detected_subj
+                # Decouple note from active session of different subject
+                active = cls.get_active_session(user_id)
+                if active and active.get("subject", "").lower() != detected_subj.lower():
+                    session_id = None
 
         tag = cls.classify_tag(text, explicit_tag)
         now_dt = datetime.now()
@@ -168,6 +195,29 @@ class NoteService:
         return dict(row) if row else None
 
     @classmethod
+    def delete_note(cls, note_id: str, user_id: Optional[str] = None) -> bool:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        if user_id:
+            cursor.execute("""
+                UPDATE notes 
+                SET is_deleted = 1, updated_at = ? 
+                WHERE note_id = ? AND user_id = ? AND is_deleted = 0
+            """, (now, note_id, user_id))
+        else:
+            cursor.execute("""
+                UPDATE notes 
+                SET is_deleted = 1, updated_at = ? 
+                WHERE note_id = ? AND is_deleted = 0
+            """, (now, note_id))
+        
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected > 0
+
+    @classmethod
     def get_notes_by_filter(cls, user_id: str, subject: Optional[str] = None, 
                             tag: Optional[str] = None, timeframe: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = get_db_connection()
@@ -214,7 +264,15 @@ class NoteService:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        if not topic or topic.strip().lower() in ["all", "everything", "my notes", "notes"]:
+        # Clean topic string from conversational prepositions and filler words
+        clean_topic = ""
+        if topic:
+            clean_topic = topic.strip().lower()
+            clean_topic = re.sub(r"^(?:on|about|for|regarding|in)\s+", "", clean_topic)
+            clean_topic = re.sub(r"\s+(?:notes|lecture|class|session|revision)$", "", clean_topic)
+            clean_topic = clean_topic.replace("my ", "").strip()
+
+        if not clean_topic or clean_topic in ["all", "everything", "my notes", "notes", "lecture"]:
             active = cls.get_active_session(user_id)
             if active:
                 cursor.execute("""
@@ -233,12 +291,14 @@ class NoteService:
                 ORDER BY created_at ASC
             """, (user_id,))
             rows = cursor.fetchall()
+            if not rows and not user_id:
+                # Check if notes exist under default student or any user only when no user_id specified
+                cursor.execute("SELECT * FROM notes WHERE is_deleted = 0 ORDER BY created_at ASC")
+                rows = cursor.fetchall()
             conn.close()
             return [dict(r) for r in rows]
 
-        clean_topic = topic.strip().lower()
-        clean_topic = clean_topic.replace("my ", "").replace(" notes", "").strip()
-
+        # Targeted query with cleaned topic
         cursor.execute("""
             SELECT * FROM notes 
             WHERE user_id = ? AND is_deleted = 0 AND (
@@ -249,5 +309,114 @@ class NoteService:
             ORDER BY created_at ASC
         """, (user_id, clean_topic, f"%{clean_topic}%", f"%{clean_topic}%"))
         rows = cursor.fetchall()
+
+        # If no notes for this user, only check cross-user if user_id is empty or None
+        if not rows and not user_id:
+            cursor.execute("""
+                SELECT * FROM notes 
+                WHERE is_deleted = 0 AND (
+                    LOWER(subject) = ? OR 
+                    LOWER(subject) LIKE ? OR 
+                    LOWER(text) LIKE ?
+                )
+                ORDER BY created_at ASC
+            """, (clean_topic, f"%{clean_topic}%", f"%{clean_topic}%"))
+            rows = cursor.fetchall()
+
         conn.close()
         return [dict(r) for r in rows]
+
+    @classmethod
+    def get_analytics(cls, user_id: str) -> Dict[str, Any]:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # 1. Total notes
+        cursor.execute("SELECT COUNT(*) as total FROM notes WHERE user_id = ? AND is_deleted = 0", (user_id,))
+        total_notes = cursor.fetchone()["total"]
+
+        # Fallback to all notes if user_id has no notes yet (e.g. cross-demo)
+        if total_notes == 0:
+            cursor.execute("SELECT COUNT(*) as total FROM notes WHERE is_deleted = 0")
+            total_notes = cursor.fetchone()["total"]
+            cursor.execute("""
+                SELECT subject, COUNT(*) as count 
+                FROM notes 
+                WHERE is_deleted = 0 
+                GROUP BY subject 
+                ORDER BY count DESC
+            """)
+            subject_rows = cursor.fetchall()
+            subject_counts = {r["subject"]: r["count"] for r in subject_rows}
+
+            cursor.execute("""
+                SELECT tag, COUNT(*) as count 
+                FROM notes 
+                WHERE is_deleted = 0 
+                GROUP BY tag
+            """)
+            tag_rows = cursor.fetchall()
+            tag_counts = {r["tag"]: r["count"] for r in tag_rows}
+
+            cursor.execute("SELECT COUNT(*) as total FROM sessions")
+            total_sessions = cursor.fetchone()["total"]
+        else:
+            # 2. Subject breakdown
+            cursor.execute("""
+                SELECT subject, COUNT(*) as count 
+                FROM notes 
+                WHERE user_id = ? AND is_deleted = 0 
+                GROUP BY subject 
+                ORDER BY count DESC
+            """, (user_id,))
+            subject_rows = cursor.fetchall()
+            subject_counts = {r["subject"]: r["count"] for r in subject_rows}
+
+            # 3. Tag breakdown
+            cursor.execute("""
+                SELECT tag, COUNT(*) as count 
+                FROM notes 
+                WHERE user_id = ? AND is_deleted = 0 
+                GROUP BY tag
+            """, (user_id,))
+            tag_rows = cursor.fetchall()
+            tag_counts = {r["tag"]: r["count"] for r in tag_rows}
+
+            # 4. Total sessions
+            cursor.execute("SELECT COUNT(*) as total FROM sessions WHERE user_id = ?", (user_id,))
+            total_sessions = cursor.fetchone()["total"]
+
+        conn.close()
+
+        top_subjects = list(subject_counts.items())
+        subj_summary = ", ".join(f"{count} in {subj}" for subj, count in top_subjects[:3]) if top_subjects else "no subject notes yet"
+        important_count = tag_counts.get("Important", 0)
+        definition_count = tag_counts.get("Definition", 0)
+        example_count = tag_counts.get("Example", 0)
+        general_count = tag_counts.get("General", 0)
+
+        spoken_summary = (
+            f"Study analytics summary: You have {total_notes} total notes across {len(subject_counts)} subjects, "
+            f"including {subj_summary}. "
+            f"You have {important_count} important exam points, {definition_count} definitions, and {example_count} examples recorded."
+        )
+
+        # Knowledge concept nodes for visual knowledge map
+        concept_nodes = []
+        for subj, count in top_subjects:
+            percentage = round((count / max(total_notes, 1)) * 100, 1)
+            concept_nodes.append({
+                "subject": subj,
+                "notes_count": count,
+                "percentage": percentage,
+            })
+
+        return {
+            "total_notes": total_notes,
+            "total_sessions": total_sessions,
+            "subject_counts": subject_counts,
+            "tag_counts": tag_counts,
+            "top_subjects": top_subjects,
+            "concept_nodes": concept_nodes,
+            "spoken_summary": spoken_summary
+        }

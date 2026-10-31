@@ -3,10 +3,13 @@ __pycache__/
 *.pyc
 venv/
 env/
+.venv/
 .env
 *.db
 *.sqlite3
 .pytest_cache/
+gemini_key.txt
+*gemini_key*
 
 # Flutter
 frontend/build/

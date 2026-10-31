@@ -189,6 +189,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 desc: "Verbal Q&A quiz with scored feedback.",
                 icon: Icons.quiz,
               ),
+              _buildCommandCard(
+                context,
+                title: "7. Recent Recordings & Deletion",
+                example: "\"Open recents.\"",
+                desc: "Browse audio recordings by academic subject and delete wrong notes.",
+                icon: Icons.history,
+              ),
+              _buildCommandCard(
+                context,
+                title: "8. Study Analytics & Visual Graphs",
+                example: "\"Show my analytics.\" or \"Open graphs.\"",
+                desc: "Accessible visual charts & sonification of subjects, tags, and knowledge concepts.",
+                icon: Icons.bar_chart,
+              ),
 
               const SizedBox(height: 24),
 
@@ -207,8 +221,21 @@ class _HomeScreenState extends State<HomeScreen> {
                 runSpacing: 12,
                 children: [
                   AccessibleButton(
+                    label: "Study Analytics",
+                    icon: Icons.bar_chart,
+                    isPrimary: true,
+                    onPressed: () => Navigator.pushNamed(context, '/analytics'),
+                  ),
+                  AccessibleButton(
+                    label: "Recent Notes",
+                    icon: Icons.history,
+                    isPrimary: true,
+                    onPressed: () => Navigator.pushNamed(context, '/recents'),
+                  ),
+                  AccessibleButton(
                     label: "Active Lecture",
                     icon: Icons.school,
+                    isPrimary: false,
                     onPressed: () => Navigator.pushNamed(context, '/active_lecture'),
                   ),
                   AccessibleButton(

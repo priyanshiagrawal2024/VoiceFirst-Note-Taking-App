@@ -35,6 +35,12 @@ class CorrectionService:
         # Case-insensitive replacement
         pattern = re.compile(re.escape(target), re.IGNORECASE)
         if not pattern.search(original_text):
+            # If the replacement word is already present (e.g. from auto-correction), accept as corrected
+            rep_pattern = re.compile(re.escape(replacement), re.IGNORECASE)
+            if rep_pattern.search(original_text):
+                conn.close()
+                spoken_msg = f"Corrected. The note now says: {original_text}"
+                return True, spoken_msg, current_note
             conn.close()
             return False, f"I couldn't find {target} in your last note. Your last note says: {original_text}", current_note
 
