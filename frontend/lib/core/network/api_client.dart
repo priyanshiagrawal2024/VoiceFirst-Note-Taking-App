@@ -154,13 +154,17 @@ class ApiClient {
   }
 
   Future<bool> checkHealth() async {
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/api/health')).timeout(const Duration(seconds: 2));
-      return response.statusCode == 200;
-    } catch (e) {
-      return false;
-    }
+  try {
+    final response = await http
+        .get(Uri.parse('$baseUrl/api/health'))
+        .timeout(const Duration(seconds: 60));
+
+    return response.statusCode == 200;
+  } catch (e) {
+    debugPrint('[ApiClient] Health check error: $e');
+    return false;
   }
+}
 
   Future<List<FlashcardModel>> generateFlashcards({
     String userId = AppConstants.defaultUserId,
