@@ -1,6 +1,6 @@
 class AppConstants {
   static const String appName = "Voice-First";
-  static const String defaultBackendUrl = "http://127.0.0.1:5000";
+  static const String defaultBackendUrl = "https://voicefirst-backend.onrender.com";
   static const String defaultUserId = "student_user_1";
 
   // Spoken Greetings
