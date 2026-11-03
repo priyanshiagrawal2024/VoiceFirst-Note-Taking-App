@@ -129,7 +129,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Expanded(
                           child: Text(
                             _isBackendConnected
-                                ? "Backend Connected (Localhost: 5000)"
+                                ? "Backend Connected (${Uri.tryParse(settings.backendUrl)?.host ?? settings.backendUrl})"
                                 : "Backend Disconnected",
                             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                           ),
